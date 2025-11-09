@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>STONE Swap Pro</title>
+<style>
+/* ---------------- General Styles ---------------- */
+body{font-family:Arial,sans-serif;background:#1a1a2e;color:#fff;margin:0;padding:0;}
+.container{max-width:500px;margin:50px auto;padding:20px;background:#162447;border-radius:15px;box-shadow:0 4px 15px rgba(0,0,0,0.5);}
+h1{text-align:center;color:#e43f5a;margin-bottom:20px;}
+label{display:block;margin-top:15px;}
+select,input{width:100%;padding:10px;margin-top:5px;border-radius:10px;border:none;outline:none;}
+button{width:100%;padding:12px;margin-top:15px;border:none;border-radius:10px;background:#e43f5a;color:#fff;font-size:16px;cursor:pointer;}
+button:hover{background:#ff5c77;}
+.status{margin-top:10px;text-align:center;}
+.balance{margin-top:5px;font-size:14px;color:#a5a5a5;}
+.history{margin-top:20px;font-size:13px;max-height:150px;overflow-y:auto;border-top:1px solid #333;padding-top:10px;}
+.token-option{display:flex;align-items:center;}
+.token-option img{width:20px;height:20px;margin-right:5px;border-radius:50%;}
+
+/* ---------------- Modal Styles ---------------- */
+.modal{display:none;position:fixed;z-index:1000;left:0;top:0;width:100%;height:100%;background:rgba(0,0,0,0.6);justify-content:center;align-items:center;}
+.modal-content{background:#162447;padding:20px;border-radius:15px;width:90%;max-width:400px;text-align:center;}
+.modal-content button{margin-top:10px;width:48%;}
+
+/* Responsive */
+@media(max-width:600px){.container{margin:20px;padding:15px;}}
+</style>
+</head>
+<body>
+
+<div class="container">
+<h1>STONE Swap Pro</h1>
+
+<!-- Network -->
+<label for="network">Network</label>
+<select id="network">
+<option value="mainnet">Mainnet</option>
+<option value="devnet">Devnet</option>
+</select>
+
+<!-- From Token -->
+<label for="inputToken">From Token</label>
+<select id="inputTokenDropdown"></select>
+<input id="inputToken" type="text" placeholder="Or enter token mint manually">
+<div class="balance" id="inputBalance"></div>
+
+<!-- To Token -->
+<label for="outputToken">To Token</label>
+<select id="outputTokenDropdown"></select>
+<input id="outputToken" type="text" placeholder="Or enter token mint manually">
+<div class="balance" id="outputBalance"></div>
+
+<!-- Amount & Slippage -->
+<label for="amount">Amount</label>
+<input id="amount" type="number" placeholder="Amount to swap">
+
+<label for="slippage">Slippage (%)</label>
+<input id="slippage" type="number" value="1" step="0.1">
+
+<div class="balance" id="estimatedOutput"></div>
+
+<!-- Buttons -->
+<button id="connectWallet">Connect Phantom Wallet</button>
+<button id="swapBtn">Get Quote & Swap</button>
+
+<!-- Status & History -->
+<div class="status" id="status"></div>
+<div class="history" id="history"></div>
+</div>
+
+<!-- Confirm Modal -->
+<div class="modal" id="confirmModal">
+<div class="modal-content">
+<p id="modalText"></p>
+<button id="confirmSwapBtn">Confirm</button>
+<button id="cancelSwapBtn">Cancel</button>
+</div>
+</div>
+
+<script src="https://unpkg.com/@solana/web3.js@latest/lib/index.iife.min.js"></script>
+<script>
+/* ---------------- Config ---------------- */
+let connection,wallet,activeNetwork="mainnet";
+const statusDiv=document.getElementById("status");
+const inputBalanceDiv=document.getElementById("inputBalance");
+const outputBalanceDiv=document.getElementById("outputBalance");
+const estimatedDiv=document.getElementById("estimatedOutput");
+const historyDiv=document.getElementById("history");
+const modal=document.getElementById("confirmModal");
+const modalText=document.getElementById("modalText");
+let pendingSwap=null;
+
+const NETWORKS={
+  mainnet:{rpc:"https://api.mainnet-beta.solana.com",jupiterApi:"https://quote-api.jup.ag/v6/quote",swapApi:"https://quote-api.jup.ag/v6/swap"},
+  devnet:{rpc:"https://api.devnet.solana.com",jupiterApi:"https://quote-api.jup.ag/v6/quote?cluster=devnet",swapApi:"https://quote-api.jup.ag/v6/swap?cluster=devnet"}
+};
+
+/* ---------------- Tokens ---------------- */
+const TOKENS={
+    mainnet:[
+        {symbol:"SOL",mint:"So11111111111111111111111111111111111111112",logo:"https://cryptologos.cc/logos/solana-sol-logo.png"},
+        {symbol:"USDC",mint:"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",logo:"https://cryptologos.cc/logos/usd-coin-usdc-logo.png"},
+        {symbol:"USDT",mint:"Es9vMFrzaCERj6U3m9VxqZg7DwqR1pHx88xkJZW1eF2G",logo:"https://cryptologos.cc/logos/tether-usdt-logo.png"}
+    ],
+    devnet:[
+        {symbol:"SOL",mint:"So11111111111111111111111111111111111111112",logo:"https://cryptologos.cc/logos/solana-sol-logo.png"},
+        {symbol:"$STONE",mint:"YOUR_STONE_MINT_ADDRESS_HERE",logo:"https://cryptologos.cc/logos/solana-sol-logo.png"}
+    ]
+};
+
+/* ---------------- Utilities ---------------- */
+function populateDropdowns(){
+    const inputDropdown=document.getElementById("inputTokenDropdown");
+    const outputDropdown=document.getElementById("outputTokenDropdown");
+    inputDropdown.innerHTML=""; outputDropdown.innerHTML="";
+    const list=TOKENS[activeNetwork];
+    list.forEach(t=>{
+        const opt1=document.createElement("option"); opt1.value=t.mint; opt1.innerText=t.symbol; inputDropdown.appendChild(opt1);
+        const opt2=document.createElement("option"); opt2.value=t.mint; opt2.innerText=t.symbol; outputDropdown.appendChild(opt2);
+    });
+}
+populateDropdowns();
+connection=new solanaWeb3.Connection(NETWORKS[activeNetwork].rpc);
+
+document.getElementById("network").addEventListener("change",(e)=>{
+    activeNetwork=e.target.value;
+    connection=new solanaWeb3.Connection(NETWORKS[activeNetwork].rpc);
+    populateDropdowns();
+    statusDiv.innerText=`Switched to ${activeNetwork}`;
+    updateBalances(); estimateSwap();
+});
+
+/* ---------------- Wallet ---------------- */
+document.getElementById("connectWallet").addEventListener("click",async()=>{
+    if(window.phantom?.solana?.isPhantom){
+        wallet=window.phantom.solana;
+        try{
+            await wallet.connect();
+            statusDiv.innerText=`Connected: ${wallet.publicKey.toString()}`;
+            updateBalances(); estimateSwap();
+        }catch(err){statusDiv.innerText=`Connection failed: ${err.message}`;}
+    }else{statusDiv.innerText="Phantom wallet not found!";}
+});
+
+/* ---------------- Balance ---------------- */
+async function getTokenBalance(pubkey,mint){
+    try{
+        const mintPub=new solanaWeb3.PublicKey(mint);
+        const tokenAccounts=await connection.getParsedTokenAccountsByOwner(pubkey,{mint:mintPub});
+        if(tokenAccounts.value.length===0) return 0;
+        return tokenAccounts.value[0].account.data.parsed.info.tokenAmount.uiAmount||0;
+    }catch(e){return 0;}
+}
+async function updateBalances(){
+    if(!wallet) return;
+    const inputMint=document.getElementById("inputToken").value.trim()||document.getElementById("inputTokenDropdown").value;
+    const outputMint=document.getElementById("outputToken").value.trim()||document.getElementById("outputTokenDropdown").value;
+    inputBalanceDiv.innerText=`Balance: ${await getTokenBalance(wallet.publicKey,inputMint)}`;
+    outputBalanceDiv.innerText=`Balance: ${await getTokenBalance(wallet.publicKey,outputMint)}`;
+}
+
+/* ---------------- Estimate Swap ---------------- */
+async function estimateSwap(){
+    if(!wallet) return;
+    const inputMint=document.getElementById("inputToken").value.trim()||document.getElementById("inputTokenDropdown").value;
+    const outputMint=document.getElementById("outputToken").value.trim()||document.getElementById("outputTokenDropdown").value;
+    const amount=document.getElementById("amount").value.trim();
+    const slippage=document.getElementById("slippage").value.trim()||1;
+    if(!inputMint||!outputMint||!amount) return;
+    try{
+        const url=`${NETWORKS[activeNetwork].jupiterApi}?inputMint=${inputMint}&outputMint=${outputMint}&amount=${amount}&slippage=${slippage}`;
+        const res=await fetch(url);
+        const data=await res.json();
+        if(data?.data?.length>0) estimatedDiv.innerText=`Estimated output: ${data.data[0].outAmount}`;
+        else estimatedDiv.innerText="No route found";
+    }catch(err){estimatedDiv.innerText="Error fetching estimate";}
+}
+
+/* ---------------- Swap ---------------- */
+document.getElementById("swapBtn").addEventListener("click",()=>{
+    const input=document.getElementById("inputToken").value.trim()||document.getElementById("inputTokenDropdown").value;
+    const output=document.getElementById("outputToken").value.trim()||document.getElementById("outputTokenDropdown").value;
+    const amount=document.getElementById("amount").value.trim();
+    const slippage=document.getElementById("slippage").value.trim()||1;
+    if(!input||!output||!amount){statusDiv.innerText="Fill all fields!"; return;}
+    pendingSwap={input,output,amount,slippage};
+    modalText.innerText=`Confirm swap: ${amount} ${input} → ${output} with ${slippage}% slippage?`;
+    modal.style.display="flex";
+});
+
+/* ---------------- Modal Buttons ---------------- */
+document.getElementById("cancelSwapBtn").addEventListener("click",()=>{modal.style.display="none"; pendingSwap=null;});
+document.getElementById("confirmSwapBtn").addEventListener("click",async()=>{
+    if(!pendingSwap) return;
+    modal.style.display="none";
+    statusDiv.innerText="Executing swap...";
+    try{
+        const {input,output,amount,slippage}=pendingSwap;
+        const quoteUrl=`${NETWORKS[activeNetwork].jupiterApi}?inputMint=${input}&outputMint=${output}&amount=${amount}&slippage=${slippage}`;
+        const res=await fetch(quoteUrl); const data=await res.json();
+        if(!data?.data?.length){statusDiv.innerText="No route found"; return;}
+        const bestRoute=data.data[0];
+        const swapUrl=`${NETWORKS[activeNetwork].swapApi}`;
+        const swapRes=await fetch(swapUrl,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({route:bestRoute,userPublicKey:wallet.publicKey.toString()})});
+        const swapData=await swapRes.json();
+        if(swapData.error){statusDiv.innerText=`Swap failed: ${swapData.error}`; return;}
+        const tx=solanaWeb3.Transaction.from(Buffer.from(swapData.transaction,"base64"));
+        const sig=await wallet.signAndSendTransaction(tx);
+        await connection.confirmTransaction(sig.signature);
+        statusDiv.innerText=`Swap successful! Signature: ${sig.signature}`;
+        addToHistory(input,output,amount,sig.signature);
+        updateBalances(); estimateSwap();
+        pendingSwap=null;
+    }catch(err){statusDiv.innerText=`Error: ${err.message}`; pendingSwap=null;}
+});
+
+/* ---------------- Swap History ---------------- */
+function addToHistory(input,output,amount,sig){
+    const row=document.createElement("div");
+    row.innerText=`Swapped ${amount} ${input} → ${output} | Sig: ${sig}`;
+    historyDiv.prepend(row);
+}
+
+/* ---------------- Live Updates ---------------- */
+document.getElementById("amount").addEventListener("input",estimateSwap);
+document.getElementById("inputToken").addEventListener("input",()=>{updateBalances();estimateSwap();});
+document.getElementById("outputToken").addEventListener("input",()=>{updateBalances();estimateSwap();});
+document.getElementById("inputTokenDropdown").addEventListener("change",()=>{updateBalances();estimateSwap();});
+document.getElementById("outputTokenDropdown").addEventListener("change",()=>{updateBalances();estimateSwap();});
+
+</script>
+</body>
+</html>
